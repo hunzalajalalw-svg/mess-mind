@@ -1,0 +1,6 @@
+{
+  "name": "MessMind Venture Studio",
+  "description": "Long-term venture development workspace for MessMind — AI-powered meal attendance, demand forecasting, and smart hostel mess management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
