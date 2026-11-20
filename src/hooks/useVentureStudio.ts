@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  doc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from 'firebase/firestore';
+import { useAuth } from '../context/AuthContext';
+import { db } from '../lib/firebase';
+import { OperationType, handleFirestoreError } from '../lib/firebaseErrors';
 import {
   MAX_ALTERNATIVES,
   createBlankAlternative,
@@ -433,23 +443,14 @@ function normalizeStage1Data(
   };
 }
 
-function loadStudioState(): VentureStudioState {
-  if (typeof window === 'undefined') {
-    return createInitialStudioState();
+function normalizeStudioState(parsed: Record<string, unknown>): VentureStudioState {
+  const fallback = createInitialStudioState();
+
+  if (!parsed || typeof parsed !== 'object') {
+    return fallback;
   }
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return createInitialStudioState();
-    }
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const fallback = createInitialStudioState();
 
-    if (!parsed || typeof parsed !== 'object') {
-      return fallback;
-    }
-
-    const version = typeof parsed.version === 'number' ? parsed.version : 1;
+  const version = typeof parsed.version === 'number' ? parsed.version : 1;
 
     if (!Array.isArray(parsed.ventures) && parsed.stage1) {
       const legacyProfile = (parsed.ventureProfile ?? {}) as Partial<VentureProfile>;
@@ -554,9 +555,38 @@ function loadStudioState(): VentureStudioState {
           ? parsed.lastSavedAt
           : new Date().toISOString(),
     };
+}
+
+function loadStudioState(): VentureStudioState {
+  if (typeof window === 'undefined') {
+    return createInitialStudioState();
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return createInitialStudioState();
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return normalizeStudioState(parsed);
   } catch {
     return createInitialStudioState();
   }
+}
+
+function sanitizeForFirestore<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (val !== undefined) {
+        out[key] = sanitizeForFirestore(val);
+      }
+    }
+    return out as T;
+  }
+  return value;
 }
 
 export function isAlternativePopulated(alt: AlternativeRecord): boolean {
@@ -597,8 +627,22 @@ export function hasVentureResearch(venture: VentureWorkspace | null): boolean {
 }
 
 export function useVentureStudio() {
+  const { user, authReady, profileSyncedUid } = useAuth();
   const [state, setState] = useState<VentureStudioState>(() => loadStudioState());
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [cloudSynced, setCloudSynced] = useState(false);
+  const [fatalSyncError, setFatalSyncError] = useState<Error | null>(null);
+
+  if (fatalSyncError) {
+    throw fatalSyncError;
+  }
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const cloudInitializedUidRef = useRef<string | null>(null);
+  const lastWrittenTimestampRef = useRef<string | null>(null);
+  const lastAppliedCloudTimestampRef = useRef<string | null>(null);
 
   const persistState = useCallback((nextState: VentureStudioState) => {
     try {
@@ -611,6 +655,143 @@ export function useVentureStudio() {
   useEffect(() => {
     persistState(state);
   }, [state, persistState]);
+
+  // Subscribe to per-user Firestore workspace when Google Sign-In is active & verified
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified || profileSyncedUid !== user.uid) {
+      cloudInitializedUidRef.current = null;
+      setCloudSynced(false);
+      return;
+    }
+
+    const docPath = `users/${user.uid}/studio/workspace`;
+    const workspaceRef = doc(db, 'users', user.uid, 'studio', 'workspace');
+
+    const unsubscribe = onSnapshot(
+      workspaceRef,
+      async (snapshot) => {
+        if (!snapshot.exists()) {
+          const current = stateRef.current;
+          const createPayload = sanitizeForFirestore({
+            ownerId: user.uid,
+            version: current.version,
+            activeView: current.activeView,
+            selectedStageId: current.selectedStageId,
+            selectedVentureId: (current.selectedVentureId ?? '').slice(0, 128),
+            ventures: current.ventures.slice(0, 10),
+            lastSavedAt: current.lastSavedAt.slice(0, 64),
+          });
+          lastWrittenTimestampRef.current = current.lastSavedAt;
+          try {
+            await setDoc(workspaceRef, {
+              ...createPayload,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            cloudInitializedUidRef.current = user.uid;
+            setCloudSynced(true);
+          } catch (error) {
+            try {
+              handleFirestoreError(error, OperationType.CREATE, docPath);
+            } catch (wrapped) {
+              setFatalSyncError(wrapped as Error);
+            }
+          }
+          return;
+        }
+
+        if (snapshot.metadata.hasPendingWrites) {
+          cloudInitializedUidRef.current = user.uid;
+          setCloudSynced(true);
+          return;
+        }
+
+        const raw = snapshot.data() as Record<string, unknown>;
+        const cloudSavedAt =
+          typeof raw.lastSavedAt === 'string' ? raw.lastSavedAt : '';
+
+        if (
+          cloudSavedAt &&
+          (cloudSavedAt === lastWrittenTimestampRef.current ||
+            cloudSavedAt === lastAppliedCloudTimestampRef.current)
+        ) {
+          cloudInitializedUidRef.current = user.uid;
+          setCloudSynced(true);
+          return;
+        }
+
+        const normalized = normalizeStudioState({
+          ...raw,
+          selectedVentureId:
+            typeof raw.selectedVentureId === 'string' &&
+            raw.selectedVentureId.trim()
+              ? raw.selectedVentureId
+              : null,
+        });
+        lastAppliedCloudTimestampRef.current = normalized.lastSavedAt;
+        cloudInitializedUidRef.current = user.uid;
+        setState(normalized);
+        setCloudSynced(true);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.GET, docPath);
+        } catch (wrapped) {
+          setFatalSyncError(wrapped as Error);
+        }
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [authReady, user, profileSyncedUid]);
+
+  // Persist local mutations to Firestore when signed in and initialized
+  useEffect(() => {
+    if (
+      !authReady ||
+      !user ||
+      !user.emailVerified ||
+      profileSyncedUid !== user.uid ||
+      cloudInitializedUidRef.current !== user.uid
+    ) {
+      return;
+    }
+
+    if (state.lastSavedAt === lastAppliedCloudTimestampRef.current) {
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      const docPath = `users/${user.uid}/studio/workspace`;
+      const workspaceRef = doc(db, 'users', user.uid, 'studio', 'workspace');
+      const updatePayload = sanitizeForFirestore({
+        version: state.version,
+        activeView: state.activeView,
+        selectedStageId: state.selectedStageId,
+        selectedVentureId: (state.selectedVentureId ?? '').slice(0, 128),
+        ventures: state.ventures.slice(0, 10),
+        lastSavedAt: state.lastSavedAt.slice(0, 64),
+      });
+      lastWrittenTimestampRef.current = state.lastSavedAt;
+
+      try {
+        await updateDoc(workspaceRef, {
+          ...updatePayload,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        try {
+          handleFirestoreError(error, OperationType.UPDATE, docPath);
+        } catch (wrapped) {
+          setFatalSyncError(wrapped as Error);
+        }
+      }
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [state, authReady, user, profileSyncedUid]);
 
   const notifySaved = useCallback((message: string) => {
     setSaveFeedback(message);
@@ -1001,6 +1182,7 @@ export function useVentureStudio() {
     state,
     selectedVenture,
     saveFeedback,
+    cloudSynced,
     selectVenture,
     setActiveView,
     setSelectedStage,

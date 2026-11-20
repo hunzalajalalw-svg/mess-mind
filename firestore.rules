@@ -1,0 +1,168 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unspecified paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserAccount(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'createdAt', 'updatedAt'])
+        && data.uid is string
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && isValidId(data.uid)
+        && data.displayName is string
+        && data.displayName.size() <= 120
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVentureStudioWorkspace(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'version',
+          'activeView',
+          'selectedStageId',
+          'selectedVentureId',
+          'ventures',
+          'lastSavedAt',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'version',
+          'activeView',
+          'selectedStageId',
+          'selectedVentureId',
+          'ventures',
+          'lastSavedAt',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && data.version is int
+        && data.version >= 1
+        && data.version <= 100
+        && data.activeView is string
+        && data.activeView.size() <= 32
+        && data.activeView in ['venture-bank', 'competition-lab']
+        && data.selectedStageId is string
+        && data.selectedStageId.size() <= 16
+        && data.selectedStageId in ['stage-1', 'stage-2', 'stage-3', 'stage-4', 'stage-5', 'stage-6']
+        && data.selectedVentureId is string
+        && data.selectedVentureId.size() <= 128
+        && data.ventures is list
+        && data.ventures.size() <= 10
+        && (data.ventures.size() == 0 || data.ventures[0] is map)
+        && data.lastSavedAt is string
+        && data.lastSavedAt.size() <= 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection: /users/{userId} (Owner-Isolated PII) ---
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId) && isVerifiedUser();
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'updatedAt']);
+
+      allow delete: if false;
+
+      // --- Subcollection: /users/{userId}/studio/{studioDocId} ---
+      match /studio/{studioDocId} {
+        allow get: if isValidId(userId)
+          && isValidId(studioDocId)
+          && isOwner(userId)
+          && isVerifiedUser()
+          && exists(/databases/$(database)/documents/users/$(userId));
+
+        allow list: if false;
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(studioDocId)
+          && studioDocId == 'workspace'
+          && isOwner(userId)
+          && isValidVentureStudioWorkspace(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(studioDocId)
+          && studioDocId == 'workspace'
+          && isOwner(userId)
+          && isValidVentureStudioWorkspace(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'version',
+            'activeView',
+            'selectedStageId',
+            'selectedVentureId',
+            'ventures',
+            'lastSavedAt',
+            'updatedAt'
+          ])
+          && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+
+        allow delete: if false;
+      }
+    }
+  }
+}

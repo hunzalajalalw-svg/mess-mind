@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated Google user profile for MessMind Venture Studio (owner-isolated PII).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID matching the document ID."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "User display name from Google Sign-In."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Verified Google account email (strictly owner-only)."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Optional profile avatar URL from Google Sign-In."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when user profile was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest user sign-in update."
+        }
+      },
+      "required": ["uid", "displayName", "email", "createdAt", "updatedAt"]
+    },
+    "VentureStudioWorkspace": {
+      "title": "VentureStudioWorkspace",
+      "description": "Per-user persisted MessMind Venture Studio workspace containing ventures, Stage 1 research, positioning map, positioning statement, and AI Strategy Challenge records.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the workspace owner."
+        },
+        "version": {
+          "type": "integer",
+          "description": "Workspace schema version integer."
+        },
+        "activeView": {
+          "type": "string",
+          "enum": ["venture-bank", "competition-lab"],
+          "maxLength": 32,
+          "description": "Active workspace navigation view."
+        },
+        "selectedStageId": {
+          "type": "string",
+          "enum": ["stage-1", "stage-2", "stage-3", "stage-4", "stage-5", "stage-6"],
+          "maxLength": 16,
+          "description": "Currently selected venture stage."
+        },
+        "selectedVentureId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Currently selected venture ID or empty string if none."
+        },
+        "ventures": {
+          "type": "array",
+          "description": "Array of venture workspaces (bounded to 10)."
+        },
+        "lastSavedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp string of latest studio edit."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when workspace document was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when workspace document was last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "version",
+        "activeView",
+        "selectedStageId",
+        "selectedVentureId",
+        "ventures",
+        "lastSavedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Owner-only authenticated user profile document containing Google Sign-In identity and email PII."
+    },
+    "/users/{userId}/studio/{studioDocId}": {
+      "schema": { "$ref": "#/entities/VentureStudioWorkspace" },
+      "description": "Owner-only venture studio workspace subcollection document storing the user's ventures and Stage 1 progress."
+    }
+  }
+}

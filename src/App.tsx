@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { AlertCircle, X } from 'lucide-react';
 import { ConfirmModal } from './components/common/ConfirmModal';
 import { JourneyStagesBar } from './components/layout/JourneyStagesBar';
 import { TopBar } from './components/layout/TopBar';
 import { Stage1Workspace } from './components/stage1/Stage1Workspace';
 import { SwitchVentureModal } from './components/venture-bank/SwitchVentureModal';
 import { VentureBankView } from './components/venture-bank/VentureBankView';
+import { useAuth } from './context/AuthContext';
 import {
   hasVentureResearch,
   useVentureStudio,
@@ -13,9 +15,20 @@ import type { Stage1SectionId } from './types/venture';
 
 export default function App() {
   const {
+    user,
+    authReady,
+    signingIn,
+    authError,
+    clearAuthError,
+    signInWithGoogle,
+    signOutUser,
+  } = useAuth();
+
+  const {
     state,
     selectedVenture,
     saveFeedback,
+    cloudSynced,
     selectVenture,
     setActiveView,
     saveVentureProfile,
@@ -92,6 +105,12 @@ export default function App() {
         hasSelectedVenture={Boolean(selectedVenture)}
         lastSavedAt={state.lastSavedAt}
         saveFeedback={saveFeedback}
+        cloudSynced={cloudSynced}
+        user={user}
+        authReady={authReady}
+        signingIn={signingIn}
+        onSignIn={signInWithGoogle}
+        onSignOut={signOutUser}
         onChangeView={(view) => {
           setActiveView(view);
           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -110,6 +129,28 @@ export default function App() {
           }
         }}
       />
+
+      {authError && (
+        <div className="border-b border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-900 sm:px-6 lg:px-8">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertCircle
+                className="h-4 w-4 shrink-0 text-rose-700"
+                aria-hidden="true"
+              />
+              <span>{authError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearAuthError}
+              aria-label="Dismiss authentication message"
+              className="rounded p-0.5 text-rose-700 hover:bg-rose-100"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {state.activeView === 'venture-bank' || !selectedVenture ? (
